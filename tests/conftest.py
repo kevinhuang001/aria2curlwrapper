@@ -316,6 +316,10 @@ def _find_aria2() -> str | None:
     repository launcher is only considered when its unpacked binary is actually
     present, otherwise the tests would pick it and fail with exit code 127.
     """
+    # ``ARIA2CURL_TEST_NO_ARIA2=1`` forces the fallback path even on machines
+    # (or CI images) that happen to ship aria2c.
+    if os.environ.get("ARIA2CURL_TEST_NO_ARIA2", "").strip().lower() in ("1", "true", "yes"):
+        return None
     launcher = REPO_ROOT / "tools" / "aria2c"
     candidates: list[str] = []
     override = os.environ.get("ARIA2CURL_TEST_ARIA2", "").strip()
