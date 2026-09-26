@@ -61,13 +61,18 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install ruff
-        run: python -m pip install ruff==0.9.6
+      - name: Install linters
+        run: python -m pip install ruff==0.9.6 pyyaml
 
       - name: Ruff (correctness rules)
         run: |
           ruff check src tests
           ruff format --check src tests
+
+      - name: Workflow files are valid
+        # GitHub silently keeps the last of a duplicated job key in YAML and
+        # then refuses the whole file, so this check runs before pushing.
+        run: python tools/check-workflows.py
 
       - name: Shell syntax
         run: |
@@ -157,15 +162,15 @@ jobs:
         run: |
           set -u
           # `curl --version` must reach the real curl through the shim.  No pipe
-          # here on purpose: the runner's bash runs with -o pipefail and a closed
+          # here on purpose: the runner's bash runs with -o pipefail, and a closed
           # pipe would make curl die of SIGPIPE (exit 141), failing the step for
           # no real reason.
           PATH="/usr/local/bin:$PATH" curl -sS --version > "$RUNNER_TEMP/version.txt"
           head -1 "$RUNNER_TEMP/version.txt"
           grep -q '^curl ' "$RUNNER_TEMP/version.txt"
 
-          # A real download through the shim must be accelerated by aria2 and
-          # must not recurse (a loop would hit the job timeout instead).
+          # A real download through the shim must be accelerated by aria2 and must
+          # not recurse; a loop would hit the job timeout instead of failing fast.
           payload="$(mktemp -d)"
           head -c 400000 /dev/urandom > "$payload/blob.bin"
           python3 -m http.server 18099 --bind 127.0.0.1 --directory "$payload" \
@@ -173,14 +178,21 @@ jobs:
           server=$!
           trap 'kill "$server" 2>/dev/null || true' EXIT
 
-          # Wait for the server instead of sleeping a fixed second; probe with the
-          # real curl so that the shim/aria2curl is not part of the readiness test.
+          # Wait for the server instead of a fixed sleep, and probe with the real
+          # curl so the readiness check does not itself go through the shim.
           ready=""
           for _ in $(seq 1 40); do
-            if /usr/bin/curl -fsS -o /dev/null http://127.0.0.1:18099/blob.bin 2>/dev/null; then ready=1; break; fi
+            if /usr/bin/curl -fsS -o /dev/null http://127.0.0.1:18099/blob.bin 2>/dev/null; then
+              ready=1
+              break
+            fi
             sleep 0.5
           done
-          test -n "$ready" || { echo "the test server never came up"; cat "$RUNNER_TEMP/server.log"; exit 1; }
+          if [ -z "$ready" ]; then
+            echo "the test server never came up"
+            cat "$RUNNER_TEMP/server.log"
+            exit 1
+          fi
 
           cd "$RUNNER_TEMP"
           if ! PATH="/usr/local/bin:$PATH" curl -sS -o blob.bin http://127.0.0.1:18099/blob.bin; then
@@ -190,69 +202,10 @@ jobs:
           fi
           cmp "$payload/blob.bin" blob.bin
 
-          # POST cannot be translated, so it must be served by the real curl.
+          # POST cannot be translated, so the real curl must serve it.
           status="$(PATH="/usr/local/bin:$PATH" curl -sS -X POST -o /dev/null -w '%{http_code}' http://127.0.0.1:18099/blob.bin)"
           echo "POST through the shim returned $status (501 means the real curl handled it)"
           test "$status" = "501"
-
-      - name: Uninstall is clean
-        env:
-          HOME: ${{ runner.temp }}/home
-        run: |
-          sh install-user.sh --prefix "$RUNNER_TEMP/prefix" --uninstall
-          test ! -e "$RUNNER_TEMP/prefix/bin/aria2curl"
-          ! grep -q ">>> aria2curl >>>" "$HOME/.bashrc"
-
-  installer-system:
-    name: system installer
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install aria2 and curl
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends aria2 curl
-
-      - name: Install machine wide with the curl shim
-        run: sudo sh install-system.sh --source . --wrap-curl --with-aria2 --yes
-
-      - name: The system layer is in place
-        run: |
-          aria2curl version
-          aria2curl config path --system
-          test -x /usr/local/bin/aria2curl
-          test -x /usr/local/bin/acurl
-          test -x /usr/local/bin/curl
-          test -f /etc/profile.d/aria2curl.sh
-          grep -q curl_path /etc/aria2curl/config.toml
-          test "$(aria2curl config get curl_path --explain | awk '/source:/{print $2}')" = "system"
-          aria2curl doctor
-
-      - name: The shim is transparent for scripts
-        run: |
-          # `curl --version` must reach the real curl through the shim.
-          PATH="/usr/local/bin:$PATH" curl -sS --version | head -1
-
-          # A real download through the shim must be accelerated by aria2 and
-          # must not recurse (a loop would hit the runner timeout instead).
-          payload="$(mktemp -d)"
-          head -c 400000 /dev/urandom > "$payload/blob.bin"
-          python3 -m http.server 18099 --bind 127.0.0.1 --directory "$payload" &
-          server=$!
-          sleep 1
-          cd "$RUNNER_TEMP"
-          PATH="/usr/local/bin:$PATH" curl -sS -o blob.bin http://127.0.0.1:18099/blob.bin
-          cmp "$payload/blob.bin" blob.bin
-
-          # POST cannot be translated, so it must be served by the real curl.
-          status="$(PATH="/usr/local/bin:$PATH" curl -sS -X POST -o /dev/null -w '%{http_code}' http://127.0.0.1:18099/blob.bin)"
-          test "$status" = "501"
-          kill "$server"
 
       - name: Uninstall is clean
         run: |
@@ -291,10 +244,19 @@ jobs:
 
       - name: The wrapper falls back instead of failing
         run: |
-          python -m http.server 18098 --directory . &
+          set -u
+          python3 -m http.server 18098 --directory . > "$RUNNER_TEMP/server.log" 2>&1 &
           server=$!
-          sleep 1
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          ready=""
+          for _ in $(seq 1 40); do
+            if /usr/bin/curl -fsS -o /dev/null http://127.0.0.1:18098/README.md 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 0.5
+          done
+          test -n "$ready" || { echo "the test server never came up"; cat "$RUNNER_TEMP/server.log"; exit 1; }
           python -m aria2curl --acurl-aria2-path=/nonexistent/aria2c \
             -sS -o "$RUNNER_TEMP/readme.md" http://127.0.0.1:18098/README.md
           test -s "$RUNNER_TEMP/readme.md"
-          kill "$server"
