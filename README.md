@@ -102,9 +102,11 @@ $ curl -fsSL https://raw.githubusercontent.com/kevinhuang001/aria2curlwrapper/ma
 
 **shim 为什么不会递归？** 三层保险：
 
-1. shim 导出 `ARIA2CURL_REAL_CURL=/usr/bin/curl`，aria2curl 回退时优先用它；
-2. aria2curl 解析 curl 时会跳过任何"文件内容里含 `aria2curl`"的目标（`_looks_like_shim`），绝不把控制权交回 shim；
-3. `ARIA2CURL_DEPTH` 计数器兜底：一旦发现自己是被自己 `exec` 出来的，直接执行真正的 curl。
+1. **shim 直接把真 curl 的地址交给我们**：它 `export ARIA2CURL_REAL_CURL=/usr/bin/curl` 后再 `exec` aria2curl，回退时优先使用这个绝对路径。这同时解决了 `/usr/local/bin` 排在 `/usr/bin` 之前导致的 PATH 顺序问题。
+2. **拒绝执行"像自己"的东西**：`resolve_curl` 逐个校验候选——`_looks_like_self()`（realpath 与自身比较，抓软链/入口别名）和 `_looks_like_shim()`（读文件头 8 KiB，含 `aria2curl` 字面量即拒绝）。按**内容**判断，不依赖文件名或 PATH 顺序。
+3. **`ARIA2CURL_DEPTH` 计数器兜底**：`exec_curl` 在 `execv` 前把计数 +1（shim 自己**不**加，否则内层会跳过 aria2）；任何以 `DEPTH>0` 启动的 aria2curl 会跳过全部决策，并以 **strict 模式**解析 curl —— 此时不再信任 PATH 上的裸名字，只接受绝对路径或**真正的二进制**（`#!` 脚本一律拒绝），因为能被 PATH 命中的 wrapper 正是回环入口。
+
+即使三层都被绕过（例如有人把 shim 写成不含任何字面量的脚本并遮蔽 PATH），最坏也只是多一跳就落到真 curl；若连一个可用的绝对路径 curl 都找不到，会明确报错 `refusing to exec curl: ... would re-enter aria2curl`，而不是静默死循环。
 
 绕开 shim 的办法：直接用 `/usr/bin/curl`，或 `sh install-system.sh --uninstall` 卸载。
 

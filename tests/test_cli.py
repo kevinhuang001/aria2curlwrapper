@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import FILE_A, FILE_B, clean_env, run_cli
+from conftest import FILE_A, FILE_B, SRC, clean_env, run_cli
 
 from aria2curl import alias as alias_mod
 
@@ -365,6 +365,70 @@ def test_curl_shim_accelerates_a_script_style_download(
     )
     assert proc.returncode == 0, proc.stderr
     assert out.read_bytes() == FILE_B
+
+
+def test_blind_shim_cannot_defeat_the_last_resort_guard(http_server, tmp_path: Path, env: dict[str, str]) -> None:
+    """A shim that is invisible to the content check must still not loop.
+
+    This shim contains no literal "aria2curl" and exports no
+    ARIA2CURL_REAL_CURL, so layer 2 cannot recognise it.  What stops the two
+    from exec'ing each other forever is the strict rule in resolve_curl: once
+    ARIA2CURL_DEPTH says we are already inside a fallback chain, a PATH entry
+    that is merely an interpreter script is refused.  The subprocess timeout is
+    part of the test -- the failure mode is a hang, not an exception.
+    """
+    inner = tmp_path / "inner"
+    inner.mkdir()
+    target = inner / "entry"  # deliberately not named aria2curl
+    target.write_text(
+        f'#!/bin/sh\nexport PYTHONPATH="{SRC}"\nexec "{sys.executable}" -m aria2curl "$@"\n',
+        encoding="utf-8",
+    )
+    target.chmod(0o755)
+
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    shim = shim_dir / "curl"
+    shim.write_text(f'#!/bin/sh\nexec "{target}" "$@"\n', encoding="utf-8")
+    shim.chmod(0o755)
+    assert b"aria2curl" not in shim.read_bytes(), "this shim must be blind to layer 2"
+
+    shim_env = dict(env, PATH=f"{shim_dir}{os.pathsep}{env['PATH']}")
+    shim_env.pop("ARIA2CURL_REAL_CURL", None)
+    proc = subprocess.run(
+        [str(shim), "-sS", "-X", "POST", "-d", "x=1", f"{http_server.url}/echo"],
+        capture_output=True,
+        text=True,
+        env=shim_env,
+        timeout=90,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["method"] == "POST"
+
+
+def test_resolve_curl_strict_mode_refuses_path_wrappers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from aria2curl.cli import resolve_curl
+    from aria2curl.config import Config
+
+    if not os.path.exists("/usr/bin/curl"):
+        pytest.skip("needs a real curl at /usr/bin/curl")
+
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    shim = shim_dir / "curl"
+    shim.write_text("#!/bin/sh\nexec /nonexistent/whatever\n", encoding="utf-8")
+    shim.chmod(0o755)
+
+    cfg = Config.defaults()
+    cfg.set("curl_path", "curl")
+    monkeypatch.setenv("PATH", str(shim_dir))
+    monkeypatch.delenv("ARIA2CURL_REAL_CURL", raising=False)
+
+    # Not yet falling back: the wrapper gets its one hop (that is how a shim
+    # hands control to aria2curl in the first place).
+    assert resolve_curl(cfg) == str(shim)
+    # Already falling back: never follow a wrapper again.
+    assert resolve_curl(cfg, strict=True) == "/usr/bin/curl"
 
 
 def test_resolve_curl_skips_a_shim(tmp_path: Path) -> None:

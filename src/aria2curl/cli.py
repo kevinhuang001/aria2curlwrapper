@@ -173,6 +173,22 @@ def _looks_like_shim(path: str) -> bool:
     return b"aria2curl" in head
 
 
+def _looks_like_script(path: str) -> bool:
+    """True when ``path`` is an interpreter script (``#!``) rather than a binary.
+
+    Only used in :func:`resolve_curl`'s strict mode.  A PATH entry called
+    ``curl`` that is really a script is either our own shim (already rejected by
+    :func:`_looks_like_shim`) or some other wrapper -- and a wrapper is exactly
+    what can bounce control back to us.  The real curl is a compiled binary, so
+    refusing scripts here breaks the loop without guessing at file names.
+    """
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(2) == b"#!"
+    except OSError:
+        return False
+
+
 def _looks_like_self(path: str) -> bool:
     try:
         real = os.path.realpath(path)
@@ -189,7 +205,7 @@ def _looks_like_self(path: str) -> bool:
     return real in candidates
 
 
-def resolve_curl(cfg: Config) -> str:
+def resolve_curl(cfg: Config, *, strict: bool = False) -> str:
     """Locate the real curl.
 
     Never resolves to aria2curl itself and never to a shim that mentions
@@ -197,31 +213,48 @@ def resolve_curl(cfg: Config) -> str:
     would loop.  ``ARIA2CURL_REAL_CURL`` is exported by the system wide shim and
     is tried first, which keeps things working when ``/usr/local/bin`` precedes
     ``/usr/bin`` in ``PATH``.
+
+    ``strict`` is set once we already know we are inside a fallback chain
+    (``ARIA2CURL_DEPTH`` > 0).  Then a bare name resolved through ``PATH`` may
+    only be a real binary: if it is an interpreter script we are looking at a
+    wrapper that can hand control straight back, which is the one thing a
+    last-resort guard must not do.
     """
-    candidates: list[str] = []
-    for candidate in (
-        os.environ.get("ARIA2CURL_REAL_CURL", "").strip(),
-        cfg["curl_path"],
-        "/usr/bin/curl",
-        "/bin/curl",
-        "/usr/local/bin/curl",
-    ):
-        if candidate and candidate not in candidates:
-            candidates.append(candidate)
+    # (candidate, resolved through PATH?)
+    ordered: list[tuple[str, bool]] = []
+
+    def offer(candidate: str) -> None:
+        candidate = candidate.strip()
+        if not candidate:
+            return
+        if any(existing == candidate for existing, _ in ordered):
+            return
+        ordered.append((candidate, os.sep not in candidate))
+
+    offer(os.environ.get("ARIA2CURL_REAL_CURL", ""))
+    offer(cfg["curl_path"])
+    for absolute in ("/usr/bin/curl", "/bin/curl", "/usr/local/bin/curl"):
+        offer(absolute)
 
     rejected: list[str] = []
-    for candidate in candidates:
-        if os.sep in candidate:
-            path = candidate if os.path.exists(candidate) else None
-        else:
+    for candidate, via_path in ordered:
+        if via_path:
             path = shutil.which(candidate)
+        else:
+            path = candidate if os.path.exists(candidate) else None
         if not path:
             continue
         if _looks_like_self(path) or _looks_like_shim(path):
-            rejected.append(path)
+            rejected.append(f"{path} would re-enter aria2curl")
+            continue
+        if strict and via_path and _looks_like_script(path):
+            # We are already inside a fallback chain and PATH handed us a
+            # wrapper.  Layer 2 cannot recognise every wrapper, so refuse to
+            # follow one: exec'ing it is how the loop restarts.
+            rejected.append(f"{path} is a wrapper script and we are already falling back")
             continue
         return path
-    detail = f"{', '.join(sorted(set(rejected)))} would re-enter aria2curl" if rejected else "curl was not found"
+    detail = "; ".join(rejected) if rejected else "curl was not found"
     raise UsageError(f"refusing to exec curl: {detail}")
 
 
@@ -231,12 +264,13 @@ def exec_curl(
     *,
     reason: str | None = None,
     stream: TextIO | None = None,
+    strict: bool = False,
 ) -> int:
     """Replace this process with curl.  Returns only when exec failed."""
     stream = stream if stream is not None else sys.stderr
     if reason:
         _notice(cfg, f"using curl instead of aria2 — {reason}", stream=stream)
-    path = resolve_curl(cfg)
+    path = resolve_curl(cfg, strict=strict)
     depth = int(os.environ.get(DEPTH_ENV, "0") or 0)
     os.environ[DEPTH_ENV] = str(depth + 1)
     for handle in (sys.stdout, sys.stderr):
@@ -777,9 +811,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     depth = int(os.environ.get(DEPTH_ENV, "0") or 0)
     if depth > 0:
-        # We were started by our own curl fallback: run the real curl directly.
+        # We were started by our own curl fallback: run the real curl directly,
+        # and refuse to follow anything on PATH that is only a wrapper.
         cfg = Config.load(...)
-        return exec_curl(cfg, rest, reason=None, stream=stream)
+        return exec_curl(cfg, rest, reason=None, stream=stream, strict=True)
 
     if not rest:
         print(usage(), file=sys.stderr)
