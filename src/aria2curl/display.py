@@ -318,7 +318,9 @@ class PlainDisplay(Display):
     def _finish_report(self, row: Row) -> None:
         if row.status == "complete":
             mark = self._style("✔", "32")
-            extra = f"{human_size(row.total)} in {human_speed(row.speed)}"
+            size = human_size(row.total)
+            # A finished download reports speed 0, so do not print "in --".
+            extra = f"{size} in {human_speed(row.speed)}" if row.speed else size
         elif row.status == "error":
             mark = self._style("✘", "31")
             extra = f"error {row.error_code}: {row.error_message or 'failed'}"
