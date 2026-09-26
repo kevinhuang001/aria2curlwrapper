@@ -292,9 +292,11 @@ def decide(cfg: Config, args: Sequence[str], options: WrapperOptions, *, stream:
 
     if not shutil.which(cfg["aria2_path"]):
         reason = f"aria2c was not found ({cfg['aria2_path']!r})"
-        if cfg["fallback_to_curl"]:
-            return Decision(False, reason)
-        raise Aria2CurlError(reason + "; install aria2 or set aria2_path")
+        # mode=aria2 means "never fall back", so a missing binary is an error,
+        # not a quiet downgrade to curl.
+        if cfg["mode"] == "aria2" or not cfg["fallback_to_curl"]:
+            raise Aria2CurlError(reason + "; install aria2, set aria2_path or use --acurl-mode=auto")
+        return Decision(False, reason)
 
     rc_reason = _curlrc_reason(cfg)
     if rc_reason:
@@ -459,14 +461,31 @@ def _tool_version(argv: Sequence[str]) -> str:
     return first[0].strip() if first else "unknown"
 
 
-def _check(label: str, ok: bool, detail: str, *, stream: TextIO, hint: str = "") -> bool:
-    mark = "✔" if ok else "✘"
+def _check(
+    label: str,
+    ok: bool,
+    detail: str,
+    *,
+    stream: TextIO,
+    hint: str = "",
+    fatal: bool = True,
+) -> bool:
+    """Print one doctor line.  Non-fatal lines are informational."""
+    mark = "✔" if ok else ("✘" if fatal else "•")
     if _is_tty(stream) and "NO_COLOR" not in os.environ:
-        mark = f"\x1b[32m{mark}\x1b[0m" if ok else f"\x1b[31m{mark}\x1b[0m"
+        color = "32" if ok else ("31" if fatal else "33")
+        mark = f"\x1b[{color}m{mark}\x1b[0m"
     print(f"  {mark} {label:<22} {detail}", file=stream)
     if not ok and hint:
         print(f"      hint: {hint}", file=stream)
-    return ok
+    return ok if fatal else True
+
+
+def _nearest_existing(path: Path) -> Path:
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return probe
 
 
 def cmd_doctor(cfg: Config, *, stream: TextIO, probe: bool = True) -> int:
@@ -502,14 +521,15 @@ def cmd_doctor(cfg: Config, *, stream: TextIO, probe: bool = True) -> int:
         rich_ok = True
     except Exception:
         rich_version, rich_ok = "not installed (plain renderer will be used)", False
-    _check("rich", rich_ok, rich_version, stream=stream, hint="pip install rich")
+    _check("rich", rich_ok, rich_version, stream=stream, hint="pip install rich", fatal=False)
 
     path = cfg.path
     if path is None:
         _check("config file", True, "disabled via ARIA2CURL_CONFIG", stream=stream)
     else:
-        exists = Path(path).exists()
-        writable = os.access(Path(path).parent if exists else Path(path).parent.parent, os.W_OK)
+        config_path = Path(path)
+        exists = config_path.exists()
+        writable = os.access(_nearest_existing(config_path.parent), os.W_OK)
         failures += not _check(
             "config file",
             writable,
@@ -517,12 +537,24 @@ def cmd_doctor(cfg: Config, *, stream: TextIO, probe: bool = True) -> int:
             stream=stream,
             hint="set --acurl-config to a writable path",
         )
+    if cfg.system_path:
+        system_exists = Path(cfg.system_path).is_file()
+        _check(
+            "system config",
+            system_exists,
+            f"{cfg.system_path} ({'exists' if system_exists else 'absent'})",
+            stream=stream,
+            hint="optional; install-system.sh creates it",
+            fatal=False,
+        )
 
-    failures += not _check(
+    _check(
         "terminal",
         _is_tty(sys.stderr),
         f"stderr {'is' if _is_tty(sys.stderr) else 'is not'} a tty, TERM={os.environ.get('TERM', '?')}",
         stream=stream,
+        hint="progress falls back to the plain renderer without a tty",
+        fatal=False,
     )
 
     if probe and aria2_path:

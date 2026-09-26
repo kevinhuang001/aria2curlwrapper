@@ -309,20 +309,47 @@ def requests_log(http_server: Server) -> list[Request]:
     return http_server.requests
 
 
-@pytest.fixture(scope="session")
-def aria2_binary() -> str:
-    """Path to a usable aria2c, or skip the E2E tests."""
-    candidates = []
-    if os.environ.get("ARIA2CURL_TEST_ARIA2"):
-        candidates.append(os.environ["ARIA2CURL_TEST_ARIA2"])
-    candidates.append(str(REPO_ROOT / "tools" / "aria2c"))
+def _find_aria2() -> str | None:
+    """Locate a usable aria2c without ever returning a broken launcher.
+
+    ``ARIA2CURL_TEST_ARIA2`` may be a bare name (as in CI) or a path.  The
+    repository launcher is only considered when its unpacked binary is actually
+    present, otherwise the tests would pick it and fail with exit code 127.
+    """
+    launcher = REPO_ROOT / "tools" / "aria2c"
+    candidates: list[str] = []
+    override = os.environ.get("ARIA2CURL_TEST_ARIA2", "").strip()
+    if override:
+        candidates.append(override)
+    if (REPO_ROOT / ".aria2root" / "usr" / "bin" / "aria2c").exists():
+        candidates.append(str(launcher))
     found = shutil.which("aria2c")
     if found:
         candidates.append(found)
     for candidate in candidates:
-        if candidate and os.path.exists(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    pytest.skip("aria2c is not available; install aria2 or run tools/fetch-aria2.sh")
+        path = shutil.which(candidate) if os.sep not in candidate else candidate
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+@pytest.fixture(scope="session")
+def aria2_binary() -> str:
+    """Path to a usable aria2c; tests that need it are skipped without one."""
+    path = _find_aria2()
+    if not path:
+        pytest.skip("aria2c is not available; install aria2 or run tools/fetch-aria2.sh")
+    return path
+
+
+@pytest.fixture(scope="session")
+def aria2_optional() -> str | None:
+    """Same lookup, but ``None`` instead of a skip.
+
+    The CLI tests must keep running on machines without aria2: that is exactly
+    the fallback path the wrapper promises.
+    """
+    return _find_aria2()
 
 
 @pytest.fixture()

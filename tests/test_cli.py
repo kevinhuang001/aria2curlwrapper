@@ -16,12 +16,9 @@ from aria2curl import alias as alias_mod
 
 
 @pytest.fixture()
-def env(aria2_binary: str, config_file: Path) -> dict[str, str]:
-    return clean_env(
-        ARIA2CURL_CONFIG=str(config_file),
-        ARIA2CURL_ARIA2_PATH=aria2_binary,
-        ARIA2CURL_ENGINE="none",
-    )
+def env(aria2_optional: str | None, config_file: Path) -> dict[str, str]:
+    extra = {"ARIA2CURL_ARIA2_PATH": aria2_optional} if aria2_optional else {}
+    return clean_env(ARIA2CURL_CONFIG=str(config_file), ARIA2CURL_ENGINE="none", **extra)
 
 
 # ------------------------------------------------------------------- meta usage
@@ -168,7 +165,7 @@ def test_alias_rejects_unknown_name() -> None:
 # -------------------------------------------------------------------- dry runs
 
 
-def test_dry_run_shows_the_aria2_command(env: dict[str, str], tmp_path: Path) -> None:
+def test_dry_run_shows_the_aria2_command(env: dict[str, str], tmp_path: Path, aria2_binary: str) -> None:
     out = tmp_path / "out.bin"
     result = run_cli(["--acurl-dry-run", "-o", str(out), "http://example.test/a.bin"], env=env)
     assert result.returncode == 0
@@ -178,7 +175,7 @@ def test_dry_run_shows_the_aria2_command(env: dict[str, str], tmp_path: Path) ->
     assert not out.exists()
 
 
-def test_explain_reports_a_fallback(env: dict[str, str]) -> None:
+def test_explain_reports_a_fallback(env: dict[str, str], aria2_binary: str) -> None:
     result = run_cli(["--acurl-explain", "-X", "POST", "http://example.test/a.bin"], env=env)
     assert result.returncode == 0
     assert "decision:   curl" in result.stderr
@@ -220,10 +217,18 @@ def test_mode_curl_always_uses_curl(http_server, tmp_path: Path, env: dict[str, 
     assert out.read_bytes() == FILE_B
 
 
-def test_mode_aria2_refuses_to_fall_back(env: dict[str, str]) -> None:
+def test_mode_aria2_refuses_to_fall_back(env: dict[str, str], aria2_binary: str) -> None:
     result = run_cli(["--acurl-mode=aria2", "-X", "POST", "http://example.test/a.bin"], env=env)
     assert result.returncode == 2
     assert "cannot translate" in result.stderr
+
+
+def test_mode_aria2_without_the_binary_is_an_error(env: dict[str, str]) -> None:
+    """mode=aria2 promises "never fall back", so a missing aria2c must fail."""
+    strict = dict(env, ARIA2CURL_ARIA2_PATH="/nonexistent/aria2c", ARIA2CURL_MODE="aria2")
+    result = run_cli(["-o", "/tmp/never", "http://example.test/a.bin"], env=strict, timeout=60)
+    assert result.returncode == 2
+    assert "aria2c was not found" in result.stderr
 
 
 def test_no_fallback_flag_reports_failure(env: dict[str, str]) -> None:

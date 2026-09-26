@@ -151,6 +151,7 @@ jobs:
           test -f /etc/profile.d/aria2curl.sh
           grep -q curl_path /etc/aria2curl/config.toml
           test "$(aria2curl config get curl_path --explain | awk '/source:/{print $2}')" = "system"
+          aria2curl doctor
 
       - name: The shim is transparent for scripts
         run: |
@@ -199,5 +200,20 @@ jobs:
       - name: Install aria2curl
         run: python -m pip install -e ".[dev]"
 
+      - name: No aria2c is installed
+        run: |
+          command -v aria2c && exit 1 || echo "aria2c is absent, as intended"
+
       - name: Everything must still work through plain curl
-        run: python -m pytest -q tests/test_cli.py tests/test_config.py tests/test_curlparse.py tests/test_display.py tests/test_aria2args.py tests/test_exitcodes.py
+        run: |
+          python -m pytest -q tests/test_cli.py tests/test_config.py tests/test_curlparse.py \
+            tests/test_display.py tests/test_aria2args.py tests/test_exitcodes.py
+
+      - name: The wrapper falls back instead of failing
+        run: |
+          python -m http.server 18098 --directory . &
+          server=$!
+          sleep 1
+          python -m aria2curl -sS -o "$RUNNER_TEMP/readme.md" http://127.0.0.1:18098/README.md
+          test -s "$RUNNER_TEMP/readme.md"
+          kill "$server"

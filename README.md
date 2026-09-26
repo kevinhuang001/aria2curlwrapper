@@ -42,7 +42,7 @@ $ aria2curl -o ubuntu.iso https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop
 | **全局配置** | `aria2curl config list/get/set/unset/reset/edit`，TOML 持久化，带类型、范围、默认值与来源（file/env/cli）标注。 |
 | **一键安装** | 用户级与系统级两个 `curl … | sh` 脚本：前者写你的 shell alias，后者装到 `/usr/local` + `/etc` 并提供全进程生效的 `curl` shim（带三重防递归），都可 `--uninstall`。 |
 | **零业务依赖** | 只有 `rich`（可选）用于仪表盘；RPC 客户端基于标准库 `http.client`，不依赖 aria2 之外的任何东西。 |
-| **精心测试** | 190+ 测试，自带支持 `Range` 的测试服务器，用真实 `aria2c` 跑端到端下载、续传、错误码与回退。 |
+| **精心测试** | 268 测试，自带支持 `Range` 的测试服务器，用真实 `aria2c` 跑端到端下载、续传、错误码与回退。 |
 
 ---
 
