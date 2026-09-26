@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# Local aria2 bootstrap (tools/fetch-aria2.sh)
+.aria2root/
+.debcache/
+.aria2env/
+.condapkgs/
+.condarc-home/
+
+# Scratch
+/tmp-demo/
+*.log

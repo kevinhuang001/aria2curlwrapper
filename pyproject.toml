@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aria2curl"
+version = "1.0.0"
+description = "A transparent curl-compatible wrapper that accelerates downloads with aria2"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "aria2curl contributors" }]
+keywords = ["curl", "aria2", "aria2c", "download", "accelerator", "wrapper"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: POSIX",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Internet :: File Transfer Protocol (FTP)",
+  "Topic :: Internet :: WWW/HTTP",
+  "Topic :: System :: Networking",
+]
+dependencies = ["rich>=13.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-timeout>=2"]
+
+[project.scripts]
+aria2curl = "aria2curl.cli:main"
+acurl = "aria2curl.cli:main"
+
+[project.urls]
+Homepage = "https://example.invalid/aria2curl"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = [".aria2root", ".debcache", "tmp-demo"]
+
+[tool.ruff.lint]
+# Correctness only: syntax/statement errors and pyflakes (undefined names,
+# unused imports) -- no style opinions.
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Development helper: run the aria2c binary extracted into .aria2root/.
+#
+# The real thing is `apt install aria2` (or your distro's package manager); this
+# script only exists so that the test-suite and demos work on machines where the
+# package cannot be installed (no root).  It pins LD_LIBRARY_PATH to the bundled
+# libraries because the extracted binary is not in the system loader path.
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+lib="$root/.aria2root/usr/lib/x86_64-linux-gnu"
+bin="$root/.aria2root/usr/bin/aria2c"
+
+if [ ! -x "$bin" ]; then
+    echo "tools/aria2c: $bin not found; run tools/fetch-aria2.sh first" >&2
+    exit 127
+fi
+
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    LD_LIBRARY_PATH="$lib:$LD_LIBRARY_PATH"
+else
+    LD_LIBRARY_PATH="$lib"
+fi
+export LD_LIBRARY_PATH
+exec "$bin" "$@"
